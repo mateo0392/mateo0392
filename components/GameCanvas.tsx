@@ -9,14 +9,22 @@ import {
   TIGER_SPEED, 
   BANANA_RADIUS, 
   TREE_RADIUS,
+  STAFF_RADIUS,
+  STAFF_SWING_RANGE,
+  TIGER_STUN_DURATION,
+  SNAKE_RADIUS,
+  SNAKE_SPEED,
+  SNAKE_MAX_HEALTH,
+  SNAKE_SEGMENTS,
   COLORS 
 } from '../constants';
-import { Entity, Banana, Tree, Position } from '../types';
+import { Entity, Banana, Tree, Position, Staff, Snake, GameStatus } from '../types';
 
 interface GameCanvasProps {
   onScoreUpdate: (score: number) => void;
   onGameOver: () => void;
-  status: string;
+  onVictory: () => void;
+  status: GameStatus;
 }
 
 interface Decoration {
@@ -31,10 +39,11 @@ interface AnimatedBanana extends Banana {
   spawnTime: number;
 }
 
-const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, status }) => {
+const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, onVictory, status }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>();
   const animationFrame = useRef(0);
+  const prevStatusRef = useRef<GameStatus>(status);
   
   const monkey = useRef<Entity>({
     x: GAME_WIDTH / 2,
@@ -45,7 +54,10 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
   });
 
   const tigers = useRef<Entity[]>([]);
+  const snake = useRef<Snake | null>(null);
   const lastTigerScore = useRef(0);
+  const staff = useRef<Staff | null>(null);
+  const isSwinging = useRef(0);
 
   const bananas = useRef<AnimatedBanana[]>([]);
   const trees = useRef<Tree[]>([]);
@@ -63,6 +75,8 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
   };
 
   const spawnTiger = useCallback(() => {
+    if (score.current >= 200) return;
+
     const corners = [
       { x: 50, y: 50 },
       { x: GAME_WIDTH - 50, y: 50 },
@@ -70,17 +84,56 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       { x: GAME_WIDTH - 50, y: GAME_HEIGHT - 50 }
     ];
     const corner = corners[Math.floor(Math.random() * corners.length)];
-    
-    // Variamos ligeramente la velocidad para evitar que se amontonen perfectamente
-    const speedVariation = 0.8 + Math.random() * 0.4; // entre 80% y 120% de la velocidad base
+    const speedVariation = 0.8 + Math.random() * 0.4;
     
     tigers.current.push({
       x: corner.x,
       y: corner.y,
       radius: TIGER_RADIUS,
       speed: TIGER_SPEED * speedVariation,
-      angle: 0
+      angle: 0,
+      isStunned: false,
+      stunTimer: 0
     });
+  }, []);
+
+  const spawnSnake = useCallback(() => {
+    tigers.current = [];
+    const segments = Array.from({ length: SNAKE_SEGMENTS }).map(() => ({ x: -100, y: -100 }));
+    snake.current = {
+      x: -100,
+      y: -100,
+      radius: SNAKE_RADIUS,
+      speed: SNAKE_SPEED,
+      angle: 0,
+      health: SNAKE_MAX_HEALTH,
+      maxHealth: SNAKE_MAX_HEALTH,
+      segments: segments
+    };
+  }, []);
+
+  const spawnStaff = useCallback(() => {
+    let attempts = 0;
+    let newPos = { x: 0, y: 0 };
+    let valid = false;
+
+    while (!valid && attempts < 20) {
+      newPos = {
+        x: Math.random() * (GAME_WIDTH - 150) + 75,
+        y: Math.random() * (GAME_HEIGHT - 150) + 75
+      };
+      if (!isPointInTree(newPos, trees.current)) {
+        valid = true;
+      }
+      attempts++;
+    }
+
+    staff.current = {
+      id: 'ruyi-jingu-bang',
+      x: newPos.x,
+      y: newPos.y,
+      isPickedUp: false
+    };
   }, []);
 
   const spawnBanana = useCallback(() => {
@@ -111,6 +164,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
   const initGame = useCallback(() => {
     score.current = 0;
     lastTigerScore.current = 0;
+    staff.current = null;
+    snake.current = null;
+    isSwinging.current = 0;
     onScoreUpdate(0);
     monkey.current = {
       x: GAME_WIDTH / 2,
@@ -120,7 +176,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       angle: 0
     };
     
-    // Inicializar con UN SOLO tigre al principio
     tigers.current = [];
     spawnTiger();
     
@@ -152,24 +207,66 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
   }, [onScoreUpdate, spawnBanana, spawnTiger]);
 
   useEffect(() => {
-    if (status === 'PLAYING') {
+    // Solo reiniciamos el estado del juego si pasamos a PLAYING desde un estado que NO sea PAUSED
+    if (status === GameStatus.PLAYING && prevStatusRef.current !== GameStatus.PAUSED) {
       initGame();
     }
+    prevStatusRef.current = status;
   }, [status, initGame]);
 
   const update = () => {
-    if (status !== 'PLAYING') return;
+    if (status !== GameStatus.PLAYING) return;
     animationFrame.current++;
 
     let dx = 0;
     let dy = 0;
     const k = keys.current;
     
-    // Movimiento RESTRINGIDO a WASD únicamente
-    if (k['w'] || k['W']) dy -= 1;
-    if (k['s'] || k['S']) dy += 1;
-    if (k['a'] || k['A']) dx -= 1;
-    if (k['d'] || k['D']) dx += 1;
+    if (k['w']) dy -= 1;
+    if (k['s']) dy += 1;
+    if (k['a']) dx -= 1;
+    if (k['d']) dx += 1;
+
+    if (k[' '] && staff.current?.isPickedUp && isSwinging.current === 0) {
+      isSwinging.current = 15;
+      
+      tigers.current.forEach(tiger => {
+        const tdx = tiger.x - monkey.current.x;
+        const tdy = tiger.y - monkey.current.y;
+        const dist = Math.sqrt(tdx * tdx + tdy * tdy);
+        const angleToTiger = Math.atan2(tdy, tdx);
+        let angleDiff = Math.abs(angleToTiger - monkey.current.angle);
+        if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+
+        if (dist < STAFF_SWING_RANGE + tiger.radius && angleDiff < Math.PI / 2) {
+          tiger.isStunned = true;
+          tiger.stunTimer = TIGER_STUN_DURATION;
+          tiger.x += Math.cos(angleToTiger) * 100;
+          tiger.y += Math.sin(angleToTiger) * 100;
+        }
+      });
+
+      if (snake.current) {
+        const sdx = snake.current.x - monkey.current.x;
+        const sdy = snake.current.y - monkey.current.y;
+        const sdist = Math.sqrt(sdx * sdx + sdy * sdy);
+        const angleToSnake = Math.atan2(sdy, sdx);
+        let angleDiff = Math.abs(angleToSnake - monkey.current.angle);
+        if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
+
+        if (sdist < STAFF_SWING_RANGE + snake.current.radius && angleDiff < Math.PI / 2) {
+          snake.current.health -= 1;
+          snake.current.x += Math.cos(angleToSnake) * 40;
+          snake.current.y += Math.sin(angleToSnake) * 40;
+          
+          if (snake.current.health <= 0) {
+            onVictory();
+          }
+        }
+      }
+    }
+
+    if (isSwinging.current > 0) isSwinging.current--;
 
     isMoving.current = dx !== 0 || dy !== 0;
 
@@ -183,8 +280,46 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
     monkey.current.x = Math.max(monkey.current.radius, Math.min(GAME_WIDTH - monkey.current.radius, monkey.current.x));
     monkey.current.y = Math.max(monkey.current.radius, Math.min(GAME_HEIGHT - monkey.current.radius, monkey.current.y));
 
-    // IA Tigres
+    if (snake.current) {
+      const sdx = monkey.current.x - snake.current.x;
+      const sdy = monkey.current.y - snake.current.y;
+      const sdist = Math.sqrt(sdx * sdx + sdy * sdy);
+      
+      if (sdist > 0) {
+        snake.current.x += (sdx / sdist) * snake.current.speed;
+        snake.current.y += (sdy / sdist) * snake.current.speed;
+        snake.current.angle = Math.atan2(sdy, sdx);
+      }
+
+      const head = { x: snake.current.x, y: snake.current.y };
+      let prev = head;
+      for (let i = 0; i < snake.current.segments.length; i++) {
+        const seg = snake.current.segments[i];
+        const ddx = prev.x - seg.x;
+        const ddy = prev.y - seg.y;
+        const dd = Math.sqrt(ddx * ddx + ddy * ddy);
+        const targetDist = snake.current.radius * 0.7;
+        if (dd > targetDist) {
+          seg.x += (ddx / dd) * (dd - targetDist);
+          seg.y += (ddy / dd) * (dd - targetDist);
+        }
+        prev = seg;
+      }
+
+      if (sdist < monkey.current.radius + snake.current.radius - 15) {
+        onGameOver();
+      }
+    }
+
     tigers.current.forEach(tiger => {
+      if (tiger.isStunned && tiger.stunTimer) {
+        tiger.stunTimer--;
+        if (tiger.stunTimer <= 0) {
+          tiger.isStunned = false;
+        }
+        return;
+      }
+
       const tdx = monkey.current.x - tiger.x;
       const tdy = monkey.current.y - tiger.y;
       const dist = Math.sqrt(tdx * tdx + tdy * tdy);
@@ -200,7 +335,20 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       }
     });
 
-    // Colisión entre tigres para evitar que se solapen
+    if (staff.current) {
+      if (!staff.current.isPickedUp) {
+        const sdx = monkey.current.x - staff.current.x;
+        const sdy = monkey.current.y - staff.current.y;
+        const sdist = Math.sqrt(sdx * sdx + sdy * sdy);
+        if (sdist < monkey.current.radius + STAFF_RADIUS) {
+          staff.current.isPickedUp = true;
+        }
+      } else {
+        staff.current.x = monkey.current.x;
+        staff.current.y = monkey.current.y;
+      }
+    }
+
     for (let i = 0; i < tigers.current.length; i++) {
       for (let j = i + 1; j < tigers.current.length; j++) {
         const t1 = tigers.current[i];
@@ -222,7 +370,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       }
     }
 
-    // Recolección de Bananas
     bananas.current = bananas.current.filter(banana => {
       const bdx = monkey.current.x - banana.x;
       const bdy = monkey.current.y - banana.y;
@@ -231,10 +378,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
         score.current += 1;
         onScoreUpdate(score.current);
         
-        // Mecánica de nuevo tigre cada 30 bananas
-        if (score.current > 0 && score.current % 30 === 0 && score.current !== lastTigerScore.current) {
-          spawnTiger();
-          lastTigerScore.current = score.current;
+        if (score.current < 200) {
+          if (score.current > 0 && score.current % 30 === 0 && score.current !== lastTigerScore.current) {
+            spawnTiger();
+            lastTigerScore.current = score.current;
+          }
+        }
+
+        if (score.current === 100 && !staff.current) {
+          spawnStaff();
+        }
+
+        if (score.current === 200 && !snake.current) {
+          spawnSnake();
         }
         
         return false;
@@ -246,15 +402,15 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       spawnBanana();
     }
 
-    // Colisión con Árboles
     trees.current.forEach(tree => {
-      const entities = [monkey.current, ...tigers.current];
+      const entities = [monkey.current, ...tigers.current, ...(snake.current ? [snake.current] : [])];
       entities.forEach(ent => {
         const edx = ent.x - tree.x;
         const edy = ent.y - tree.y;
         const dist = Math.sqrt(edx * edx + edy * edy);
-        if (dist < ent.radius + tree.radius * 0.45) {
-          const overlap = (ent.radius + tree.radius * 0.45) - dist;
+        const collisionRadius = ent === snake.current ? ent.radius * 0.3 : ent.radius + tree.radius * 0.45;
+        if (dist < collisionRadius) {
+          const overlap = collisionRadius - dist;
           ent.x += (edx / (dist || 1)) * overlap;
           ent.y += (edy / (dist || 1)) * overlap;
         }
@@ -321,7 +477,88 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
       ctx.restore();
     });
 
+    if (staff.current && !staff.current.isPickedUp) {
+      ctx.save();
+      ctx.translate(staff.current.x, staff.current.y);
+      ctx.rotate(animationFrame.current * 0.05);
+      ctx.shadowBlur = 20;
+      ctx.shadowColor = 'gold';
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(-2, -25, 4, 50);
+      ctx.fillStyle = 'red';
+      ctx.fillRect(-3, -25, 6, 8);
+      ctx.fillRect(-3, 17, 6, 8);
+      ctx.restore();
+    }
+
+    if (snake.current) {
+      for (let i = snake.current.segments.length - 1; i >= 0; i--) {
+        const seg = snake.current.segments[i];
+        const sizeRatio = 1 - (i / snake.current.segments.length) * 0.5;
+        ctx.save();
+        ctx.translate(seg.x, seg.y);
+        ctx.fillStyle = COLORS.SNAKE;
+        ctx.beginPath();
+        ctx.arc(0, 0, snake.current.radius * sizeRatio, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = COLORS.SNAKE_BELLY;
+        ctx.beginPath();
+        ctx.arc(0, 0, snake.current.radius * sizeRatio * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.translate(snake.current.x, snake.current.y);
+      ctx.rotate(snake.current.angle);
+      ctx.fillStyle = COLORS.SNAKE;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, snake.current.radius * 1.2, snake.current.radius, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'red';
+      ctx.beginPath();
+      ctx.arc(snake.current.radius * 0.6, -10, 5, 0, Math.PI * 2);
+      ctx.arc(snake.current.radius * 0.6, 10, 5, 0, Math.PI * 2);
+      ctx.fill();
+      if (animationFrame.current % 60 < 20) {
+        ctx.strokeStyle = 'red';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(snake.current.radius * 1.2, 0);
+        ctx.lineTo(snake.current.radius * 1.6, 0);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      const barWidth = 100;
+      const barHeight = 8;
+      const healthRatio = snake.current.health / snake.current.maxHealth;
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(snake.current.x - barWidth / 2, snake.current.y - 70, barWidth, barHeight);
+      ctx.fillStyle = '#ef4444';
+      ctx.fillRect(snake.current.x - barWidth / 2, snake.current.y - 70, barWidth * healthRatio, barHeight);
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(snake.current.x - barWidth / 2, snake.current.y - 70, barWidth, barHeight);
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Naga Boss', snake.current.x, snake.current.y - 75);
+    }
+
     const bob = (isMoving.current && animationFrame.current % 20 < 10) ? 3 : 0;
+
+    if (isSwinging.current > 0) {
+      ctx.save();
+      ctx.translate(monkey.current.x, monkey.current.y);
+      ctx.rotate(monkey.current.angle);
+      ctx.beginPath();
+      ctx.arc(0, 0, STAFF_SWING_RANGE, -Math.PI / 3, Math.PI / 3);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.lineWidth = 15;
+      ctx.stroke();
+      ctx.restore();
+    }
 
     ctx.save();
     ctx.translate(monkey.current.x, monkey.current.y);
@@ -334,12 +571,36 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ onScoreUpdate, onGameOver, stat
     ctx.beginPath();
     ctx.arc(10, 0, monkey.current.radius * 0.6, 0, Math.PI * 2);
     ctx.fill();
+    
+    if (staff.current?.isPickedUp) {
+      ctx.save();
+      const swingRot = isSwinging.current > 0 ? (isSwinging.current / 15) * Math.PI : 0;
+      ctx.rotate(Math.PI / 4 + swingRot);
+      ctx.fillStyle = '#f59e0b';
+      ctx.fillRect(5, -20, 3, 40);
+      ctx.fillStyle = 'red';
+      ctx.fillRect(4, -20, 5, 5);
+      ctx.fillRect(4, 15, 5, 5);
+      ctx.restore();
+    }
     ctx.restore();
 
     tigers.current.forEach(tiger => {
       ctx.save();
       ctx.translate(tiger.x, tiger.y);
       ctx.rotate(tiger.angle);
+      
+      if (tiger.isStunned) {
+        ctx.globalAlpha = 0.5 + Math.sin(animationFrame.current * 0.5) * 0.2;
+        ctx.fillStyle = 'yellow';
+        for(let i=0; i<3; i++) {
+          const ang = (animationFrame.current * 0.1) + (i * Math.PI * 2 / 3);
+          ctx.beginPath();
+          ctx.arc(Math.cos(ang) * 20, Math.sin(ang) * 10 - 20, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
       ctx.fillStyle = COLORS.TIGER;
       ctx.beginPath();
       ctx.ellipse(0, 0, tiger.radius * 1.3, tiger.radius, 0, 0, Math.PI * 2);

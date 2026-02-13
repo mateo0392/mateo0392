@@ -8,6 +8,14 @@ export interface Entity extends Position {
   radius: number;
   speed: number;
   angle: number;
+  isStunned?: boolean;
+  stunTimer?: number;
+}
+
+export interface Snake extends Entity {
+  health: number;
+  maxHealth: number;
+  segments: Position[];
 }
 
 export interface Banana extends Position {
@@ -18,8 +26,15 @@ export interface Tree extends Position {
   radius: number;
 }
 
+export interface Staff extends Position {
+  id: string;
+  isPickedUp: boolean;
+}
+
 export enum GameStatus {
   START = 'START',
   PLAYING = 'PLAYING',
-  GAME_OVER = 'GAME_OVER'
+  PAUSED = 'PAUSED',
+  GAME_OVER = 'GAME_OVER',
+  VICTORY = 'VICTORY'
 }

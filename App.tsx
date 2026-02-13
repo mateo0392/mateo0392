@@ -7,14 +7,29 @@ import { getJungleWisdom } from './services/geminiService';
 const App: React.FC = () => {
   const [status, setStatus] = useState<GameStatus>(GameStatus.START);
   const [score, setScore] = useState(0);
-  const [highScore, setHighScore] = useState(0);
+  const [highScore, setHighScore] = useState(() => {
+    const saved = localStorage.getItem('jungleDash_highScore');
+    return saved ? parseInt(saved, 10) : 0;
+  });
   const [wisdom, setWisdom] = useState("¡Cuidado con los tigres, busca las bananas!");
   const [isLoadingWisdom, setIsLoadingWisdom] = useState(false);
 
+  // Actualizar el record automáticamente cuando el puntaje actual lo supere
+  useEffect(() => {
+    if (score > highScore) {
+      setHighScore(score);
+      localStorage.setItem('jungleDash_highScore', score.toString());
+    }
+  }, [score, highScore]);
+
   const handleGameOver = () => {
     setStatus(GameStatus.GAME_OVER);
-    if (score > highScore) setHighScore(score);
     fetchNewWisdom();
+  };
+
+  const handleVictory = () => {
+    setStatus(GameStatus.VICTORY);
+    setWisdom("¡Has derrotado a la Naga Real! Eres el verdadero Rey Mono.");
   };
 
   const fetchNewWisdom = async () => {
@@ -27,6 +42,14 @@ const App: React.FC = () => {
   const startGame = () => {
     setStatus(GameStatus.PLAYING);
     setScore(0);
+  };
+
+  const togglePause = () => {
+    if (status === GameStatus.PLAYING) {
+      setStatus(GameStatus.PAUSED);
+    } else if (status === GameStatus.PAUSED) {
+      setStatus(GameStatus.PLAYING);
+    }
   };
 
   return (
@@ -65,18 +88,45 @@ const App: React.FC = () => {
           <div className="bg-emerald-950/50 p-4 rounded-xl border-2 border-emerald-800">
              <h3 className="text-[10px] font-black text-emerald-500 uppercase mb-2">Controles</h3>
              <p className="text-[10px] text-emerald-400 mb-2">Usa exclusivamente el teclado.</p>
-             <div className="flex justify-center gap-1 text-[10px]">
-                <div className="bg-emerald-800/80 p-2 rounded border border-emerald-700 text-center font-bold text-xl px-4">WASD</div>
+             <div className="grid grid-cols-2 gap-2 text-[10px]">
+                <div className="flex flex-col items-center">
+                  <div className="bg-emerald-800/80 p-2 rounded border border-emerald-700 text-center font-bold text-xl px-4">WASD</div>
+                  <span className="mt-1">Mover</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="bg-emerald-800/80 p-2 rounded border border-emerald-700 text-center font-bold text-xl px-4">ESPACIO</div>
+                  <span className="mt-1">Bastón</span>
+                </div>
              </div>
           </div>
         </div>
 
         {/* Área del Juego */}
         <div className="relative flex-grow order-1 lg:order-2 w-full max-w-[800px] mx-auto">
+          {/* Botón de Pausa Flotante (Superior Derecha) */}
+          {(status === GameStatus.PLAYING || status === GameStatus.PAUSED) && (
+            <button 
+              onClick={togglePause}
+              title={status === GameStatus.PAUSED ? "Reanudar" : "Pausar"}
+              className={`absolute top-4 right-4 z-40 p-3 rounded-full border-2 transition-all active:scale-90 shadow-lg ${
+                status === GameStatus.PAUSED 
+                ? 'bg-yellow-500 border-yellow-700 text-yellow-950 scale-110' 
+                : 'bg-black/40 border-emerald-500/50 text-white hover:bg-black/60'
+              }`}
+            >
+              {status === GameStatus.PAUSED ? (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 md:h-8 md:w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.14v14l11-7-11-7z"/></svg>
+              ) : (
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 md:h-8 md:w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+              )}
+            </button>
+          )}
+
           <GameCanvas 
             status={status} 
             onScoreUpdate={setScore} 
             onGameOver={handleGameOver} 
+            onVictory={handleVictory}
           />
 
           {/* Overlays Adaptativos */}
@@ -85,15 +135,29 @@ const App: React.FC = () => {
               <h2 className="text-4xl md:text-7xl text-yellow-400 mb-6 game-font animate-bounce">¡PREPÁRATE!</h2>
               <div className="max-w-md space-y-4 mb-8">
                 <p className="text-lg md:text-2xl text-white font-bold">Recolecta las bananas y escapa de los tigres.</p>
-                <p className="text-sm md:text-lg text-emerald-300 bg-emerald-900/40 p-3 rounded-lg border border-emerald-700">
-                  Usa las teclas <strong>WASD</strong> para mover al mono.
-                </p>
+                <div className="text-sm md:text-lg text-emerald-300 bg-emerald-900/40 p-3 rounded-lg border border-emerald-700">
+                  <p>Mover: <strong>WASD</strong></p>
+                  <p className="mt-2 text-yellow-400">A las <strong>100 bananas</strong>: Bastón Mágico.</p>
+                  <p className="mt-1 text-red-400 font-bold">A las 200 bananas: ¡EL JEFE FINAL!</p>
+                </div>
               </div>
               <button 
                 onClick={startGame}
                 className="group relative bg-green-600 hover:bg-green-500 text-white px-10 py-4 md:px-16 md:py-6 rounded-full text-2xl md:text-4xl font-black transition-all hover:scale-105 active:scale-95 shadow-[0_10px_0_0_#166534] active:shadow-none active:translate-y-[10px]"
               >
                 ¡A JUGAR!
+              </button>
+            </div>
+          )}
+
+          {status === GameStatus.PAUSED && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/50 backdrop-blur-sm p-6 text-center">
+              <h2 className="text-6xl md:text-8xl text-white mb-8 game-font">PAUSA</h2>
+              <button 
+                onClick={togglePause}
+                className="bg-yellow-500 hover:bg-yellow-400 text-yellow-950 px-12 py-5 rounded-full text-2xl md:text-3xl font-black transition-all hover:scale-105 active:scale-95 shadow-[0_8px_0_0_#a16207] active:shadow-none active:translate-y-[8px]"
+              >
+                REANUDAR
               </button>
             </div>
           )}
@@ -113,6 +177,25 @@ const App: React.FC = () => {
                 className="bg-orange-600 hover:bg-orange-500 text-white px-12 py-5 rounded-full text-2xl md:text-3xl font-black transition-all hover:scale-105 active:scale-95 shadow-[0_8px_0_0_#9a3412] active:shadow-none active:translate-y-[8px]"
               >
                 REINTENTAR
+              </button>
+            </div>
+          )}
+
+          {status === GameStatus.VICTORY && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-yellow-600/90 backdrop-blur-xl p-6 text-center">
+              <h2 className="text-5xl md:text-8xl text-yellow-100 mb-2 game-font">¡VICTORIA!</h2>
+              <p className="text-xl md:text-3xl text-white mb-8 font-black uppercase tracking-tighter">
+                ¡Has derrotado a la serpiente gigante!
+              </p>
+              <div className="bg-black/40 p-6 rounded-2xl border-2 border-yellow-400 mb-8 scale-110">
+                <span className="block text-sm text-yellow-200 uppercase font-black">Puntuación Final</span>
+                <span className="text-6xl text-yellow-400 font-black">{score}</span>
+              </div>
+              <button 
+                onClick={startGame}
+                className="bg-green-600 hover:bg-green-500 text-white px-12 py-5 rounded-full text-2xl md:text-3xl font-black transition-all hover:scale-105 active:scale-95 shadow-[0_8px_0_0_#14532d] active:shadow-none active:translate-y-[8px]"
+              >
+                JUGAR DE NUEVO
               </button>
             </div>
           )}
